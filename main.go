@@ -34,10 +34,44 @@ func main() {
 	log.Fatal(server.ListenAndServe())
 }
 
+// 删除代理协议头
+func ProcessProtocolHeader(req *http.Request) {
+	hopHeaders := []string{
+		"Connection",
+		"Proxy-Connection",
+		"Keep-Alive",
+		"Proxy-Authenticate",
+		"Proxy-Authorization",
+		"Te",
+		"Trailer",
+		"Transfer-Encoding",
+		"Upgrade",
+	}
+
+	for key, _ := range req.Header {
+
+		if contains(hopHeaders, key) {
+			req.Header.Del(key)
+		}
+	}
+}
+func contains(list []string, key string) bool {
+	for _, item := range list {
+		if item == key {
+			return true
+		}
+	}
+	return false
+}
+
 // 处理普通的 HTTP 请求
+
 func handleHTTP(w http.ResponseWriter, req *http.Request) {
 	Autho := req.Header.Get("Proxy-Authorization") // 获取请求头中的代理授权信息
 	Authos := strings.Split(Autho, " ")
+	fmt.Println(req.Header)
+	ProcessProtocolHeader(req) //删除协议头当中hop-by-hop协议头
+	fmt.Println(req.Header)
 	if len(Authos) == 2 {
 		decodedAuth, _ := base64.StdEncoding.DecodeString(Authos[1]) // 解码代理授权信息
 		// 打印解码后的代理授权信息
@@ -84,11 +118,9 @@ func handleTunneling(w http.ResponseWriter, r *http.Request) {
 	//fmt.Println(Autho)
 	Authos := strings.Split(Autho, " ")
 	body, err := io.ReadAll(r.Body)
-	fmt.Println(len(Authos), len(Authos) != 0, string(body), r.Method)
+	fmt.Println(len(Authos), len(Authos) != 0, string(body), len(headers))
 	if len(Authos) == 2 {
-
 		decodedAuth, _ := base64.StdEncoding.DecodeString(Authos[1]) // 解码代理授权信息
-
 		// 打印解码后的代理授权信息
 		p := proxy.WriteToMap(newIppool, string(decodedAuth))
 
@@ -97,11 +129,15 @@ func handleTunneling(w http.ResponseWriter, r *http.Request) {
 		response := "Custom Response: " + p
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(response))
+		write, err := w.Write([]byte(response))
+		if err != nil {
+			fmt.Println("错误", write)
+			return
+		}
 
 		return
 	}
-
+	fmt.Println(len(r.Header))
 	dest_conn, err := net.DialTimeout("tcp", r.Host, 10*time.Second) // 建立与目标服务器的 TCP 连接
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
@@ -109,6 +145,7 @@ func handleTunneling(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	hijacker, ok := w.(http.Hijacker)
+
 	if !ok {
 		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
 		return
@@ -117,6 +154,7 @@ func handleTunneling(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 	}
+
 	go transfer(dest_conn, client_conn) // 将客户端数据转发给目标服务器
 	go transfer(client_conn, dest_conn) // 将目标服务器的响应转发给客户端
 }
@@ -125,5 +163,6 @@ func handleTunneling(w http.ResponseWriter, r *http.Request) {
 func transfer(destination io.WriteCloser, source io.ReadCloser) {
 	defer destination.Close()
 	defer source.Close()
+
 	io.Copy(destination, source)
 }
