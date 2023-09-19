@@ -1,14 +1,16 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"io"
-	proxy "ippool/Proxy"
 	"ippool/config"
+	"ippool/utils"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -17,8 +19,8 @@ var newIppool *config.IpPool
 
 func main() {
 
-	newIppool = config.NewMap(500)
-	go proxy.Crawler(newIppool)
+	newIppool = config.NewMap(50, "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt")
+	go newIppool.LoopGetIP()
 	fmt.Println("ip导入成功")
 	server := &http.Server{
 		Addr: ":9981",
@@ -34,56 +36,50 @@ func main() {
 	log.Fatal(server.ListenAndServe())
 }
 
-// 删除代理协议头
-func ProcessProtocolHeader(req *http.Request) {
-	hopHeaders := []string{
-		"Connection",
-		"Proxy-Connection",
-		"Keep-Alive",
-		"Proxy-Authenticate",
-		"Proxy-Authorization",
-		"Te",
-		"Trailer",
-		"Transfer-Encoding",
-		"Upgrade",
-	}
-
-	for key, _ := range req.Header {
-
-		if contains(hopHeaders, key) {
-			req.Header.Del(key)
-		}
-	}
-}
-func contains(list []string, key string) bool {
-	for _, item := range list {
-		if item == key {
-			return true
-		}
-	}
-	return false
-}
-
 // 处理普通的 HTTP 请求
 
 func handleHTTP(w http.ResponseWriter, req *http.Request) {
 	Autho := req.Header.Get("Proxy-Authorization") // 获取请求头中的代理授权信息
 	Authos := strings.Split(Autho, " ")
-	fmt.Println(req.Header)
-	ProcessProtocolHeader(req) //删除协议头当中hop-by-hop协议头
-	fmt.Println(req.Header)
+
+	utils.ProcessProtocolHeader(req) // 删除协议头当中hop-by-hop协议头
+	//fmt.Println(req.Header)
+
+	//if len(Authos) == 2 {
+	var decodedAuth []byte
 	if len(Authos) == 2 {
-		decodedAuth, _ := base64.StdEncoding.DecodeString(Authos[1]) // 解码代理授权信息
-		// 打印解码后的代理授权信息
-		p := proxy.WriteToMap(newIppool, string(decodedAuth))
-		w.Write([]byte(p))
-		return
+		decodedAuth, _ = base64.StdEncoding.DecodeString(Authos[1])
+	} else {
+		//decodedAuth= interface{}
 	}
+	//	decodedAuth, _ := base64.StdEncoding.DecodeString(Authos[1]) // 解码代理授权信息
 	// 打印解码后的代理授权信息
-	fmt.Println(newIppool.GetIP())
+	p := "https://" + newIppool.WriteToMap(string(decodedAuth))
+	proxyurl, _ := url.Parse(p)
+	//returnhttp://httpbin.org/get?show_env=1
+	//}
+	// 打印解码后的代理授权信息
+	fmt.Println(p)
+	// 创建一个自定义的 Transport
+	tlsConfig := &tls.Config{InsecureSkipVerify: true}
+	transport := &http.Transport{
+		Proxy:           http.ProxyURL(proxyurl), // 设置代理地址
+		TLSClientConfig: tlsConfig,               //跳过ssl验证
+	}
 
-	resp, err := http.DefaultTransport.RoundTrip(req) // 发起 HTTP 请求
+	// 创建一个自定义的 Client
+	client := &http.Client{
+		Transport: transport,
+	}
 
+	//resp, err := client.Do(req) // 发起 HTTP 请求
+	fmt.Println(req.URL)
+	resp, err := client.Do(&http.Request{
+		Method: req.Method,
+		URL:    req.URL,
+		Header: req.Header,
+		Body:   req.Body,
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
@@ -106,7 +102,7 @@ func copyHeader(dst, src http.Header) {
 
 // 处理 CONNECT 方法的请求
 func handleTunneling(w http.ResponseWriter, r *http.Request) {
-	//Autho := r.Header.Get("Proxy-Authorization") // 获取请求头中的代理授权信息
+	//Autho := r.Header.Get("CrawlProxy-Authorization") // 获取请求头中的代理授权信息
 	headers := r.Header
 	Autho := r.Header.Get("Proxy-Authorization") // 获取请求头中的代理授权信息
 	// 遍历协议头并打印
@@ -117,12 +113,12 @@ func handleTunneling(w http.ResponseWriter, r *http.Request) {
 	}
 	//fmt.Println(Autho)
 	Authos := strings.Split(Autho, " ")
-	body, err := io.ReadAll(r.Body)
-	fmt.Println(len(Authos), len(Authos) != 0, string(body), len(headers))
+	//body, err := io.ReadAll(r.Body)
+	//fmt.Println(len(Authos), len(Authos) != 0, string(body), len(headers))
 	if len(Authos) == 2 {
 		decodedAuth, _ := base64.StdEncoding.DecodeString(Authos[1]) // 解码代理授权信息
 		// 打印解码后的代理授权信息
-		p := proxy.WriteToMap(newIppool, string(decodedAuth))
+		p := newIppool.WriteToMap(string(decodedAuth))
 
 		fmt.Println(string(decodedAuth), p)
 
@@ -137,7 +133,7 @@ func handleTunneling(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
-	fmt.Println(len(r.Header))
+	//fmt.Println(len(r.Header))
 	dest_conn, err := net.DialTimeout("tcp", r.Host, 10*time.Second) // 建立与目标服务器的 TCP 连接
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
